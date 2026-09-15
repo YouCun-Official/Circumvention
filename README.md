@@ -8,7 +8,7 @@
 Copy-Item .env.example .env
 ```
 
-使用主题搜索并生成带公网图片的 Markdown/PDF 时，至少填写以下项目。示例只使用占位符，不要把真实密钥提交到 Git：
+使用主题搜索并生成带公网图片的 Markdown/PDF 时，至少填写以下项目。
 
 ```dotenv
 # OpenAI 兼容模型接口：始终必填
@@ -33,6 +33,8 @@ CUSTOM_UPLOAD_REMOVE_EXIF=true
 
 `.env` 已被 `.gitignore` 排除。配置完成后可运行 `npm run doctor` 检查模型、Tavily、浏览器和图床配置是否齐全。
 
+（推荐使用gemini 3.7 flash，开销小，速度快，文风贴合）
+
 查看全部命令参数：
 
 ```powershell
@@ -45,7 +47,7 @@ CUSTOM_UPLOAD_REMOVE_EXIF=true
 .\paperflow.ps1 -Topic "multimodal agent tuning" -Count 3
 ```
 
-生成“Agent 交互、竞争、合作与博弈”方向的 5 篇文章：
+例：生成“Agent 交互、竞争、合作与博弈”方向的 5 篇文章：
 
 ```powershell
 .\paperflow.ps1 `
