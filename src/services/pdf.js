@@ -39,9 +39,10 @@ function linesFromItems(items, pageHeight) {
     .map(row => ({ y: row.y, text: row.items.sort((a, b) => a.x - b.x).map(item => item.text).join(' ').replace(/\s+/g, ' ') }));
 }
 
-function captionRows(lines) {
+export function captionRows(lines) {
   const regex = /^\s*(?:Figure|Fig\.?|Table)\s*[A-Z]?\d+(?:[.:]|\s)/i;
-  return lines.filter(line => regex.test(line.text));
+  const reference = /^\s*(?:Figure|Fig\.?|Table)\s*[A-Z]?\d+\s+(?:is|are|was|were|shows?|lists?|presents?|illustrates?|reports?|summari[sz]es?|compares?|provides?|contains?|demonstrates?|has|have|includes?)\b/i;
+  return lines.filter(line => regex.test(line.text) && !reference.test(line.text));
 }
 
 export async function extractPdfText(file) {
@@ -124,17 +125,22 @@ export async function extractFigures(pdfFile, parsed, assetsDir, cfg, onLog = ()
   fs.mkdirSync(assetsDir, { recursive: true });
   const candidatePages = parsed.pages.filter(page => page.captions.length).slice(0, 10);
   const figures = [];
+  let visionUnavailable = false;
   for (const page of candidatePages) {
     if (figures.length >= maxFigures) break;
     onLog(`分析第 ${page.page} 页的图注与图片区域`);
     const rendered = await renderPage(pdfFile, page.page);
     let boxes = [];
-    if (cfg.llmApiKey && (cfg.visionModel || cfg.llmModel)) {
-      try { boxes = await locateWithVision(cfg, page, rendered); }
-      catch (error) { onLog(`视觉裁图失败，使用坐标裁切：${error.message}`, 'warn'); }
+    let visionConfirmed = false;
+    if (!visionUnavailable && cfg.llmApiKey && (cfg.visionModel || cfg.llmModel)) {
+      try { boxes = await locateWithVision(cfg, page, rendered); visionConfirmed = true; }
+      catch (error) {
+        visionUnavailable = true;
+        onLog(`视觉定位服务不可用，本篇后续图片使用坐标裁切：${error.message}`, 'warn');
+      }
     }
     const byCaption = new Map(boxes.map(item => [item.captionIndex, item]));
-    for (const fallback of fallbackBoxes(page)) {
+    for (const fallback of visionConfirmed ? [] : fallbackBoxes(page)) {
       if (!byCaption.has(fallback.captionIndex)) byCaption.set(fallback.captionIndex, fallback);
     }
     for (const item of [...byCaption.values()].sort((a, b) => a.captionIndex - b.captionIndex)) {

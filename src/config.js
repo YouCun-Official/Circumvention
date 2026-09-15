@@ -14,6 +14,8 @@ const defaults = {
   llmModel: process.env.LLM_MODEL || '',
   visionModel: process.env.VISION_MODEL || '',
   tavilyApiKey: process.env.TAVILY_API_KEY || '',
+  tavilyVenueDelayMs: Number(process.env.TAVILY_VENUE_DELAY_MS || 15000),
+  arxivMetadataDelayMs: Number(process.env.ARXIV_METADATA_DELAY_MS || 1000),
   semanticScholarApiKey: process.env.SEMANTIC_SCHOLAR_API_KEY || '',
   imageHost: process.env.IMAGE_HOST || 'local',
   publicBaseUrl: process.env.PUBLIC_BASE_URL || '',
@@ -25,6 +27,10 @@ const defaults = {
   s3PublicBaseUrl: process.env.S3_PUBLIC_BASE_URL || '',
   customUploadUrl: process.env.CUSTOM_UPLOAD_URL || '',
   customUploadToken: process.env.CUSTOM_UPLOAD_TOKEN || '',
+  customUploadStorageId: process.env.CUSTOM_UPLOAD_STORAGE_ID || '',
+  customUploadPublic: process.env.CUSTOM_UPLOAD_PUBLIC || '',
+  customUploadRemoveExif: process.env.CUSTOM_UPLOAD_REMOVE_EXIF || '',
+  customUploadDelayMs: Number(process.env.CUSTOM_UPLOAD_DELAY_MS || 0),
   browserExecutable: process.env.BROWSER_EXECUTABLE || ''
 };
 

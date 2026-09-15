@@ -18,7 +18,10 @@ test('Tavily searches once per venue and merges duplicate arXiv results', async 
     }] }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
 
-  const papers = await searchPapers('multimodal agents', 3, ['ICLR', 'ACL'], ['main'], [2026], { tavilyApiKey: 'test' });
+  const papers = await searchPapers('multimodal agents', 3, ['ICLR', 'ACL'], ['main'], [2026], {
+    tavilyApiKey: 'test',
+    tavilyVenueDelayMs: 0
+  });
   assert.equal(queries.length, 2);
   assert.match(queries[0], /multimodal agents ICLR/);
   assert.match(queries[1], /multimodal agents ACL/);

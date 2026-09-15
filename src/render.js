@@ -5,7 +5,7 @@ import { marked } from 'marked';
 import { chromium } from 'playwright-core';
 
 export const ARTICLE_CSS = `
-@page { margin: 0; }
+@page { margin: 12mm 11mm; }
 * { box-sizing: border-box; }
 html { background: #eef0f3; }
 body {
@@ -61,7 +61,8 @@ hr { height: 1px; margin: 34px 0 18px; border: 0; background: #d8dde2; }
 blockquote { margin: 18px 0; padding: 12px 17px; color: #526474; background: #f5f8fa; border-left: 3px solid #6f95b4; }
 @media print {
   html, body { background: white; }
-  .paper { max-width: none; }
+  .paper { max-width: none; padding: 0; }
+  figure img { max-height: 220mm; object-fit: contain; }
   img, li, blockquote, figure { break-inside: avoid; }
   .section-heading { break-after: avoid; }
 }
@@ -123,6 +124,7 @@ export async function exportPdf(htmlFile, pdfFile, requestedMode, cfg, onLog = (
     });
     let actualMode = requestedMode === 'long' ? 'long' : 'paged';
     if (actualMode === 'long') {
+      await page.addStyleTag({ content: '@page { margin: 0; } @media print { .paper { padding: 44px 54px 54px; } }' });
       const height = await page.locator('.paper').evaluate(element => Math.ceil(element.scrollHeight + 4));
       if (height <= 18000) {
         await page.pdf({ path: pdfFile, width: '124mm', height: `${height}px`, printBackground: true, margin: { top: '0', right: '0', bottom: '0', left: '0' } });

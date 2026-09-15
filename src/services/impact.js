@@ -8,6 +8,10 @@ function monthsOld(date) {
 
 export async function addImpactSignals(papers, cfg = {}, onLog = () => {}) {
   if (!papers.length) return papers;
+  if (!cfg.semanticScholarApiKey) {
+    onLog('未配置 Semantic Scholar API Key，跳过引用数据并按 Tavily 搜索热度排序');
+    return papers.map(paper => ({ ...paper, hotScore: Number(paper.searchScore || 0), impact: null }));
+  }
   try {
     onLog('读取 Semantic Scholar 引用与影响力数据');
     const response = await fetchWithRetry(
@@ -17,7 +21,7 @@ export async function addImpactSignals(papers, cfg = {}, onLog = () => {}) {
         headers: {
           'Content-Type': 'application/json',
           'User-Agent': 'PaperFlowPublisher/1.0',
-          ...(cfg.semanticScholarApiKey ? { 'x-api-key': cfg.semanticScholarApiKey } : {})
+          'x-api-key': cfg.semanticScholarApiKey
         },
         body: JSON.stringify({ ids: papers.map(paper => `ARXIV:${paper.baseId}`) }),
         timeoutMs: 45000

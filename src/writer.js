@@ -71,7 +71,9 @@ export function renderMarkdown({ article, paper, figures, editor = '', reviewer 
 export function writeMarkdownPair(outputDir, input) {
   const localFile = path.join(outputDir, 'article.local.md');
   const publicFile = path.join(outputDir, 'article.mdnice.md');
-  fs.writeFileSync(localFile, `${renderMarkdown({ ...input, markdownDir: outputDir, usePublic: false })}\n`, 'utf8');
-  fs.writeFileSync(publicFile, `${renderMarkdown({ ...input, markdownDir: outputDir, usePublic: true })}\n`, 'utf8');
+  const localMarkdown = renderMarkdown({ ...input, markdownDir: outputDir, usePublic: false }).replace(/\n+$/, '');
+  const publicMarkdown = renderMarkdown({ ...input, markdownDir: outputDir, usePublic: true }).replace(/\n+$/, '');
+  fs.writeFileSync(localFile, `${localMarkdown}\n`, 'utf8');
+  fs.writeFileSync(publicFile, `${publicMarkdown}\n`, 'utf8');
   return { localFile, publicFile };
 }

@@ -16,7 +16,7 @@ PaperFlow Publisher - 顶会论文分享批量生成器
   --venues <列表>      ICML,ICLR,AAAI,NEURIPS,KDD,ACL,WWW；默认全部
   --tracks <列表>      main,workshop,findings；默认全部
   --years <列表>       会议年份，如 2025,2026；默认当年和上一年
-  --length <档位>      compact(2100-2900)、standard(3000-4400)、detailed(4700-6200)
+  --length <档位>      compact(1400-1800)、standard(1850-2150，目标2000)、detailed(3000-4000)
   --pdf <版式>         paged 或 long，默认 paged
   --figures <0-10>     每篇最大配图数，默认 5
   --editor <姓名>      编辑署名
@@ -80,7 +80,7 @@ try {
     if (paper.files) console.log(`  Markdown：${path.resolve('outputs', paper.files.localMarkdown)}`);
     if (paper.error) console.log(`  原因：${paper.error}`);
   }
-  if (result.status === 'failed') process.exitCode = 1;
+  if (result.status !== 'completed') process.exitCode = 1;
 } catch (error) {
   console.error(`\n任务失败：${error.message}`);
   process.exitCode = 1;

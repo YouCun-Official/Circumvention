@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { renderMarkdown } from '../src/writer.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import { renderMarkdown, writeMarkdownPair } from '../src/writer.js';
 import { markdownToHtml } from '../src/render.js';
 
 const paper = { title: 'A Paper', absUrl: 'https://arxiv.org/abs/1234.56789', journalRef: '' };
@@ -25,7 +27,22 @@ test('writer follows the mdnice pseudo-heading template', () => {
   assert.match(markdown, /  - \*\*组件\*\*: 说明。/);
   assert.match(markdown, /!\[\]\(assets\/fig-01\.png\)/);
   assert.match(markdown, /图：中文图注/);
+  assert.match(markdown, /---\n审核 \| \n\n编辑 \| 编辑\n$/);
   assert.match(markdown, /编辑 \| 编辑/);
+});
+
+test('writer always appends blank reviewer and editor lines', () => {
+  const markdown = renderMarkdown({ article, paper, markdownDir: 'C:\\out', figures: [] });
+  assert.match(markdown, /---\n审核 \| \n\n编辑 \| \n$/);
+});
+
+test('written Markdown ends immediately after the fixed signature lines', t => {
+  const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'paperflow-writer-'));
+  t.after(() => fs.rmSync(outputDir, { recursive: true, force: true }));
+  const result = writeMarkdownPair(outputDir, { article, paper, figures: [] });
+  for (const file of [result.localFile, result.publicFile]) {
+    assert.match(fs.readFileSync(file, 'utf8'), /---\n审核 \| \n\n编辑 \| \n$/);
+  }
 });
 
 test('HTML includes the fixed WeChat article theme', () => {

@@ -29,8 +29,9 @@ export async function searchPapers(topic, count, venues, tracks, years, cfg, onL
   if (!cfg.tavilyApiKey) throw new Error('未配置 Tavily API Key。');
   const collected = new Map();
   const perVenue = Math.max(6, Math.ceil(count * 4 / Math.max(1, venues.length)));
+  const venueDelayMs = Math.max(0, Number(cfg.tavilyVenueDelayMs ?? 15000));
 
-  for (const venue of venues) {
+  for (const [venueIndex, venue] of venues.entries()) {
     const query = `${topic} ${venue} (${years.join(' OR ')}) (${queryTrackLabel(tracks)}) research paper arXiv`;
     onLog(`Tavily 搜索：${venue}｜${topic}`);
     const response = await fetchWithRetry('https://api.tavily.com/search', {
@@ -47,7 +48,8 @@ export async function searchPapers(topic, count, venues, tracks, years, cfg, onL
         include_answer: false,
         include_raw_content: false,
         include_domains: ['arxiv.org']
-      })
+      }),
+      onRetry: ({ delayMs, error }) => onLog(`Tavily 请求失败，${Math.round(delayMs / 1000)} 秒后重试：${error.message}`, 'warn')
     });
     const data = await response.json();
     for (const [rank, result] of (data.results || []).entries()) {
@@ -80,6 +82,10 @@ export async function searchPapers(topic, count, venues, tracks, years, cfg, onL
         previous.queryEvidence.push(evidence);
       }
       collected.set(baseId, previous);
+    }
+    if (venueIndex < venues.length - 1 && venueDelayMs > 0) {
+      onLog(`等待约 ${Math.round(venueDelayMs / 1000)} 秒，避免触发 Tavily 请求频率限制`);
+      await new Promise(resolve => setTimeout(resolve, venueDelayMs));
     }
   }
 

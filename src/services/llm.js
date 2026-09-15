@@ -1,46 +1,85 @@
-import { extractJson, fetchWithRetry, normalizeBaseUrl } from '../utils.js';
+import fs from 'node:fs';
+import { createHash } from 'node:crypto';
+import { atomicJson, extractJson, fetchWithRetry, normalizeBaseUrl } from '../utils.js';
 
 function endpoint(baseUrl) {
   const base = normalizeBaseUrl(baseUrl);
   return /\/chat\/completions$/i.test(base) ? base : `${base}/chat/completions`;
 }
 
-export async function chat(cfg, { messages, model, temperature = 0.2, maxTokens = 8000, json = false }) {
+function contentText(value) {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map(item => typeof item === 'string' ? item : item?.text || '').join('');
+  return '';
+}
+
+export function parseModelResponse(text, contentType = '') {
+  const raw = String(text || '');
+  if (/text\/event-stream/i.test(contentType) || /^data:\s/m.test(raw)) {
+    let content = '';
+    for (const line of raw.split(/\r?\n/)) {
+      if (!line.startsWith('data:')) continue;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === '[DONE]') continue;
+      let event;
+      try { event = JSON.parse(payload); } catch { continue; }
+      if (event.error) throw new Error(`模型上游错误：${event.error.message || JSON.stringify(event.error)}`);
+      const choice = event.choices?.[0];
+      content += contentText(choice?.delta?.content ?? choice?.message?.content);
+    }
+    if (!content) throw new Error('模型流式响应没有正文。');
+    return content;
+  }
+  let data;
+  try { data = JSON.parse(raw); }
+  catch { throw new Error(`模型接口返回了非 JSON 内容（${contentType || '未知类型'}）：${raw.slice(0, 120).replace(/\s+/g, ' ')}`); }
+  if (data.error) throw new Error(`模型上游错误：${data.error.message || JSON.stringify(data.error)}`);
+  const content = contentText(data.choices?.[0]?.message?.content);
+  if (!content) throw new Error(`模型没有返回正文：${JSON.stringify(data).slice(0, 600)}`);
+  return content;
+}
+
+async function requestChat(cfg, body, onRetry) {
+  const response = await fetchWithRetry(endpoint(cfg.llmBaseUrl), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.llmApiKey}` },
+    body: JSON.stringify(body),
+    timeoutMs: 180000,
+    onRetry
+  }, 1);
+  const text = await response.text();
+  return parseModelResponse(text, response.headers.get('content-type') || '');
+}
+
+export async function chat(cfg, { messages, model, temperature = 0.2, maxTokens = 8000, json = false, attempts = 4, onRetry = () => {} }) {
   if (!cfg.llmApiKey || !cfg.llmModel) throw new Error('未配置模型 API Key 或模型名。');
   const body = {
     model: model || cfg.llmModel,
     messages,
     temperature,
-    max_tokens: maxTokens
+    max_tokens: maxTokens,
+    stream: true
   };
   if (json) body.response_format = { type: 'json_object' };
-  let response;
-  try {
-    response = await fetchWithRetry(endpoint(cfg.llmBaseUrl), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.llmApiKey}` },
-      body: JSON.stringify(body),
-      timeoutMs: 180000
-    }, 2);
-  } catch (error) {
-    if (json && /response_format|json_object/i.test(error.message)) {
-      delete body.response_format;
-      response = await fetchWithRetry(endpoint(cfg.llmBaseUrl), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.llmApiKey}` },
-        body: JSON.stringify(body),
-        timeoutMs: 180000
-      }, 2);
-    } else throw error;
+  let last;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await requestChat(cfg, body, ({ delayMs, error }) => onRetry(`模型请求失败，${Math.round(delayMs / 1000)} 秒后重试：${error.message}`));
+    } catch (error) {
+      last = error;
+      if (json && /response_format|json_object/i.test(error.message)) delete body.response_format;
+      if (attempt >= attempts - 1) break;
+      const delayMs = 5000 * (attempt + 1);
+      onRetry(`模型接口第 ${attempt + 1} 次请求失败，${Math.round(delayMs / 1000)} 秒后重试：${error.message}`);
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
   }
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content;
-  if (!content) throw new Error(`模型没有返回正文：${JSON.stringify(data).slice(0, 600)}`);
-  return content;
+  throw last;
 }
 
 export async function visionJson(cfg, prompt, imageBuffer) {
   const content = await chat(cfg, {
+    attempts: 1,
     model: cfg.visionModel || cfg.llmModel,
     json: true,
     temperature: 0,
@@ -57,9 +96,9 @@ export async function visionJson(cfg, prompt, imageBuffer) {
 }
 
 export const LENGTH_PROFILES = {
-  compact: { min: 2100, max: 2900, target: 2500, label: '短篇' },
-  standard: { min: 3000, max: 4400, target: 3700, label: '标准篇幅' },
-  detailed: { min: 4700, max: 6200, target: 5400, label: '长篇' }
+  compact: { min: 1400, max: 1800, target: 1600, label: '短篇' },
+  standard: { min: 1850, max: 2150, target: 2000, label: '标准篇幅' },
+  detailed: { min: 3000, max: 4000, target: 3500, label: '长篇' }
 };
 
 export function articleTextLength(article) {
@@ -78,71 +117,102 @@ function validateArticle(article) {
   return article;
 }
 
-export async function writeArticle(cfg, paper, sourceText, figures, lengthName = 'standard', onLog = () => {}) {
-  const profile = LENGTH_PROFILES[lengthName] || LENGTH_PROFILES.standard;
-  const figureList = figures.map(item => ({ id: item.id, originalCaption: item.caption, page: item.page }));
-  const prompt = `你是一名严谨的中文科研编辑。根据提供的论文元数据、原文摘录和图片清单，撰写适合微信公众号的论文解读。
-
-规则：
-1. 只能使用给定材料中的事实、指标和结论；不确定的内容省略，禁止猜测会议录用状态和实验数字。
-2. 语言自然、清楚、有信息密度，避免夸张宣传和空洞评价。
-3. 背景应说明问题和已有方法局限；方法部分讲清组件和流程；实验部分包含最有代表性的定量结果；结论概括价值与边界。
-4. 每个图片 ID 最多使用一次，只把图放到确实相关的章节；可不使用质量或相关性不足的图片。
-5. 输出严格 JSON，不要 Markdown 围栏。结构如下：
-{
-  "displayTitle": "简短的论文分享标题",
-  "venue": "材料中明确出现的会议/期刊/arXiv年份，否则写 arXiv",
-  "sections": [
-    {
-      "heading": "研究背景",
-      "paragraphs": ["完整段落"],
-      "points": [{"title": "要点标题", "body": "完整说明"}],
-      "figureIds": ["fig-01"]
-    }
-  ],
-  "figureCaptions": {"fig-01": "与正文一致的简明中文图注"},
-  "conclusion": ["完整结论段落"]
+// Serialize writing requests across papers to reduce gateway pressure.
+let writingQueue = Promise.resolve();
+function serialChat(cfg, args) {
+  const task = writingQueue.then(() => chat(cfg, args));
+  writingQueue = task.catch(() => {});
+  return task;
 }
-必须包含研究背景、技术架构或方法、模型表现三个章节。根据论文内容可以增加数据集、消融实验等章节。正文目标长度为 ${profile.min}-${profile.max} 个中文字符，尽量接近 ${profile.target} 字符。
 
-论文元数据：
-${JSON.stringify({ title: paper.title, authors: paper.authors, abstract: paper.abstract, published: paper.published, updated: paper.updated, comment: paper.comment, journalRef: paper.journalRef, verifiedVenue: paper.verifiedVenue, url: paper.absUrl }, null, 2)}
+function sourceForSection(source, index) {
+  const chunks = source.split(/\n--- PAGE \d+ ---\n/).filter(Boolean);
+  const patterns = [
+    /abstract|introduction|motivation/i,
+    /method|framework|architecture|algorithm/i,
+    /experiment|results|benchmark|evaluation/i,
+    /ablation|limitation|discussion|conclusion/i
+  ];
+  const ranked = chunks.map((chunk, order) => ({
+    chunk, order, score: (chunk.match(new RegExp(patterns[index].source, 'gi')) || []).length
+  })).sort((a, b) => b.score - a.score || a.order - b.order);
+  return ranked.slice(0, 3).sort((a, b) => a.order - b.order)
+    .map(item => item.chunk.slice(0, 2700)).join('\n').slice(0, 8000);
+}
 
-图片清单：
-${JSON.stringify(figureList, null, 2)}
-
-原文摘录：
-${sourceText.slice(0, 65000)}`;
-  const content = await chat(cfg, {
-    json: true,
-    temperature: 0.25,
-    maxTokens: lengthName === 'detailed' ? 14000 : lengthName === 'compact' ? 7500 : 10500,
-    messages: [
-      { role: 'system', content: '你只输出符合要求的 JSON。保留原始英文专有名词，准确转写数字。' },
-      { role: 'user', content: prompt }
-    ]
+export async function writeArticle(cfg, paper, sourceText, figures, lengthName = 'standard', onLog = () => {}, options = {}) {
+  const profile = LENGTH_PROFILES[lengthName] || LENGTH_PROFILES.standard;
+  const checkpointFile = options.checkpointFile;
+  const signature = createHash('sha256').update(JSON.stringify({ sourceText, lengthName, profile, model: cfg.llmModel, version: 3 })).digest('hex');
+  let state = { signature, article: { displayTitle: paper.title, venue: paper.verifiedVenue?.label || 'arXiv', sections: [], conclusion: [], figureCaptions: {} } };
+  if (checkpointFile && fs.existsSync(checkpointFile)) {
+    const saved = JSON.parse(fs.readFileSync(checkpointFile, 'utf8'));
+    if (saved.signature === signature) { state = saved; onLog('已恢复章节草稿，继续处理未完成部分'); }
+  }
+  const save = () => { if (checkpointFile) atomicJson(checkpointFile, state); };
+  const headings = ['研究背景', '技术架构与方法', '实验表现', '分析与总结'];
+  const weights = [0.23, 0.30, 0.29, 0.18];
+  const system = '你是中文科研编辑，只输出 JSON。严禁使用“不是……而是……”这种八股句式。所有数字与结论须有材料依据，禁止编造。字数按所有非空白字符计算，英文每个字母也计一个字符。';
+  for (let index = 0; index < headings.length; index++) {
+    const target = Math.round(profile.target * weights[index]);
+    const lower = Math.round(profile.min * weights[index]);
+    const upper = Math.floor(profile.max * weights[index]);
+    let section = state.article.sections[index];
+    const measure = value => articleTextLength({ sections: [value] });
+    const distance = n => n < lower ? lower - n : Math.max(0, n - upper);
+    if (!section) {
+      onLog(`生成章节 ${index + 1}/4：${headings[index]}，目标约 ${target} 字符`);
+      const response = await serialChat(cfg, {
+        json: true, maxTokens: Math.max(2200, target * 3), temperature: 0.2,
+        onRetry: message => onLog(message, 'warn'),
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: `为论文《${paper.title}》撰写“${headings[index]}”章节，目标 ${target} 字符，范围 ${lower}-${upper}。仅写本章，避免重复前文。使用自然段，不要罗列英文名称。输出 {"paragraphs":["完整段落", "..."]}。\n已有章节：${state.article.sections.map(x => x.heading).join('、')}\n原文材料：\n${sourceForSection(sourceText, index)}` }
+        ]
+      });
+      const data = extractJson(response);
+      if (!Array.isArray(data.paragraphs) || !data.paragraphs.length || data.paragraphs.some(p => typeof p !== 'string')) throw new Error('章节响应缺少有效 paragraphs');
+      section = { heading: headings[index], paragraphs: data.paragraphs, figureIds: [] };
+      state.article.sections[index] = section;
+      save();
+    }
+    for (let revision = 0; revision < 3 && distance(measure(section)) > 0; revision++) {
+      const count = measure(section);
+      const compress = count > upper;
+      onLog(`修订“${headings[index]}”：${count} → 约 ${target} 字符（${compress ? '仅发送当前章节' : '附带本章原文'}）`);
+      const response = await serialChat(cfg, {
+        json: true, maxTokens: Math.max(2200, target * 3), temperature: 0.1,
+        onRetry: message => onLog(message, 'warn'),
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: `${compress ? '压缩' : '扩充'}以下章节到 ${lower}-${upper} 非空白字符，目标 ${target}，当前实测 ${count}。英文按字母计数。只输出 {"paragraphs":["完整段落"]}。保留关键机制、限定条件和核心实验数字。${compress ? '只删减和重述已有内容，禁止添加新事实。' : '只能依据所附原文补充。'}\n当前章节：${JSON.stringify(section)}${compress ? '' : '\n原文：' + sourceForSection(sourceText, index)}` }
+        ]
+      });
+      const data = extractJson(response);
+      if (!Array.isArray(data.paragraphs) || !data.paragraphs.length || data.paragraphs.some(p => typeof p !== 'string')) throw new Error('修订响应缺少有效 paragraphs');
+      const candidate = { ...section, paragraphs: data.paragraphs };
+      if (distance(measure(candidate)) < distance(measure(section))) {
+        section = candidate;
+        state.article.sections[index] = section;
+        save();
+      }
+    }
+  }
+  const article = state.article;
+  const size = articleTextLength(article);
+  if (size < profile.min || size > profile.max) {
+    save();
+    throw new Error(`草稿已保存，正文 ${size} 字符，目标 ${profile.min}-${profile.max}；重新运行可继续章节修订。`);
+  }
+  // Keep every supplied figure and its source caption; distribute figures over relevant sections.
+  article.sections.forEach(section => { section.figureIds = []; });
+  figures.forEach((figure, index) => {
+    article.sections[Math.min(index + 1, article.sections.length - 1)].figureIds.push(figure.id);
+    article.figureCaptions[figure.id] = figure.caption;
   });
-  let article = validateArticle(extractJson(content));
-  let size = articleTextLength(article);
-  for (let revisionNo = 1; revisionNo <= 2 && (size < profile.min || size > profile.max); revisionNo += 1) {
-    onLog(`${revisionNo === 1 ? '初稿' : '修订稿'}正文约 ${size} 字符，正在调整到 ${profile.min}-${profile.max} 字符`);
-    const revision = await chat(cfg, {
-      json: true,
-      temperature: 0.15,
-      maxTokens: lengthName === 'detailed' ? 14500 : 11000,
-      messages: [
-        { role: 'system', content: '你是中文科技文章编辑，只输出严格 JSON。' },
-        { role: 'user', content: `将下面的论文解读改写到 ${profile.min}-${profile.max} 个中文字符，目标约 ${profile.target} 字符。保持 JSON 字段结构、事实、数字和图片 ID 不变；过短时补充原文已有的方法机制与实验分析，过长时删除重复表述。禁止引入原材料没有的信息。\n\n当前稿件：\n${JSON.stringify(article)}\n\n可核对的原文摘录：\n${sourceText.slice(0, 45000)}` }
-      ]
-    });
-    article = validateArticle(extractJson(revision));
-    size = articleTextLength(article);
-  }
-  if (size < profile.min * 0.9 || size > profile.max * 1.1) {
-    throw new Error(`模型两次修订后正文仍为 ${size} 字符，未达到 ${profile.min}-${profile.max} 的篇幅要求。`);
-  }
-  if (size < profile.min || size > profile.max) onLog(`最终正文 ${size} 字符，轻微超出目标区间。`, 'warn');
   article.generatedTextCharacters = size;
+  article.lengthStatus = 'within_target';
   article.requestedLength = { name: lengthName, ...profile };
+  save();
   return article;
 }

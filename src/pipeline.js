@@ -88,15 +88,11 @@ async function processPaper(jobId, paper, request, cfg, batchDir, onEvent) {
 
     paperPatch(jobId, paper.baseId, { phase: '提取配图' });
     let figures = await extractFigures(sourcePdf, parsed, assetsDir, cfg, log, request.maxFigures);
-    try {
-      figures = await uploadFigures(figures, jobId, paperSlug, cfg, log);
-    } catch (error) {
-      log(`[${paper.title}] 图床上传失败，保留本地图片版：${error.message}`, 'warn');
-    }
+    figures = await uploadFigures(figures, jobId, paperSlug, cfg, log);
 
     paperPatch(jobId, paper.baseId, { phase: '生成解读' });
     log(`[${paper.title}] 生成 ${LENGTH_PROFILES[request.length].label}中文解读`);
-    const article = await writeArticle(cfg, paper, parsed.text, figures, request.length, log);
+    const article = await writeArticle(cfg, paper, parsed.text, figures, request.length, log, { checkpointFile: path.join(paperDir, 'article.draft.json') });
     article.venue = paper.verifiedVenue.label;
 
     paperPatch(jobId, paper.baseId, { phase: '排版与导出' });
@@ -153,7 +149,10 @@ export async function runJob(jobId, options = {}) {
     if (!candidates.length) throw new Error('没有找到可处理的 arXiv 论文。请调整主题、会议或年份。');
 
     updateJob(jobId, { phase: '整理会议与分类', progress: 11 });
-    const enriched = await enrichArxiv(candidates);
+    const candidateLimit = Math.max(request.count * 3, request.count);
+    const candidatePool = candidates.slice(0, candidateLimit);
+    log(`Tavily 汇总 ${candidates.length} 篇候选，读取前 ${candidatePool.length} 篇 arXiv 论文页面`);
+    const enriched = await enrichArxiv(candidatePool, { onLog: log, delayMs: cfg.arxivMetadataDelayMs });
     const withImpact = await addImpactSignals(enriched, cfg, log);
     const verified = [];
     for (const paper of withImpact) {
