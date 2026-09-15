@@ -87,6 +87,8 @@ CUSTOM_UPLOAD_REMOVE_EXIF=true
 CUSTOM_UPLOAD_DELAY_MS=2000
 ```
 
+推荐使用闪电图床，需注册邮箱方能使用API进行图片上传。
+
 首次使用前需在 Boltp 账户中完成邮箱验证。运行生成命令后，程序会从论文 PDF 提取图片、依次上传图床，并将返回的 HTTPS 地址写入 `article.mdnice.md`。上传失败会使任务明确失败；对 429 错误会自动等待后重试，重建已有任务时会复用已经上传的公网地址。
 
 直接处理指定的 arXiv 论文：
